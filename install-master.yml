@@ -1,0 +1,77 @@
+---
+- name: Install Java 11, Setup JBoss EAP, Manage Admin User, and Restart Server
+  hosts: localhost
+  connection: local
+  become: yes
+
+  tasks:
+    - name: Check if Java 11 is installed
+      command: java -version
+      register: java_check
+      ignore_errors: true
+
+    - name: Install Java 11 if not installed
+      package:
+        name: "{{ java_package }}"  # Define variable here
+        state: present
+      when: not java_check.stdout  # Skip if Java 11 output exists
+      changed_when: not java_check.stdout  # Mark as changed only if installed
+      vars:
+        java_package: "java-11-openjdk-devel"
+
+    - name: Unzip JBoss EAP archive (always run)
+      command: sudo unzip /root/jboss-eap-7.4.0/jboss-eap-7.4.0.zip -d /opt/
+      become: false
+
+    - name: Add JBoss EAP admin user (always run)
+      shell: /opt/jboss-eap-7.4/bin/add-user.sh -m -u admin -p admin -g root,admin,administrator
+      become: yes
+
+    - name: Start JBoss EAP domain server (always run)
+      shell: "nohup /opt/jboss-eap-7.4/bin/domain.sh --host-config=host-master.xml > jboss.log 2>&1 & echo $!"
+      register: jboss_start
+      async: 0
+      poll: 0
+      become: yes
+
+    - name: Save JBoss EAP process ID
+      set_fact:
+        jboss_pid: "{{ jboss_start.stdout }}"
+      when: jboss_start.stdout is defined
+
+    - name: Wait for JBoss EAP to start (optional)
+      wait_for:
+        host: localhost
+        port: 9990
+        delay: 10  # Wait 10 seconds initially
+        timeout: 60  # Maximum wait time (optional, defaults to 300s)
+        state: started
+
+    - name: Execute JBoss CLI script (always run)
+      shell: /opt/jboss-eap-7.4/bin/jboss-cli.sh --connect --controller=localhost:9990 --file=/root/jboss-eap-7.4.0/script.cli
+      become: yes
+      when: jboss_start.stdout is defined
+
+    - name: Stop JBoss EAP process (always run)
+      shell: "pkill -f '[j]boss'"
+      ignore_errors: yes
+      become: yes
+      register: jboss_stop
+
+    - name: Start JBoss EAP domain server again (always run)
+      shell: "nohup /opt/jboss-eap-7.4/bin/domain.sh --host-config=host-master.xml > jboss.log 2>&1 & echo $!"
+      register: jboss_restop
+      async: 0
+      poll: 0
+      become: yes
+      when: jboss_start.stdout is defined and jboss_stop.rc == 0
+
+    - name: Save restarted JBoss EAP process ID
+      set_fact:
+        jboss_pid_restart: "{{ jboss_restart.stdout }}"
+      when: jboss_restart.stdout is defined
+
+    - name: Echo restarted JBoss EAP process ID
+      debug:
+        msg: "Restarted JBoss EAP process ID: {{ jboss_pid_restart }}"
+      when: jboss_restart.stdout is defined
